@@ -524,19 +524,22 @@ def trigger_reminder():
     
     # WhatsApp
     if contact_info.get('whatsapp'):
-        template_name = os.environ.get("AISENSY_REMINDER_TEMPLATE")
-        if template_name:
+        campaign_name = os.environ.get("AISENSY_REMINDER_TEMPLATE")
+        if campaign_name:
             resident_name = person_on_duty.get("name", "Resident")
             owner_name = settings.get('owner_name', 'Admin')
             owner_contact = settings.get('owner_contact_number', '')
+            # According to the campaign API, the template params might be dynamic.
+            # You need to ensure the order matches the template on AiSensy.
             template_params = [resident_name, owner_name, owner_contact]
 
             whatsapp_status = send_whatsapp_template_message(
                 recipient_number=contact_info['whatsapp'],
-                template_name=template_name,
+                user_name=resident_name,
+                campaign_name=campaign_name,
                 template_params=template_params
             )
-            details.append({"recipient": person_on_duty['name'], "method": "WhatsApp", "status": "Sent" if whatsapp_status else "Failed", "content": f"Template: {template_name}"})
+            details.append({"recipient": person_on_duty['name'], "method": "WhatsApp", "status": "Sent" if whatsapp_status else "Failed", "content": f"Campaign: {campaign_name}"})
 
     # SMS
     if contact_info.get('sms'):
@@ -586,16 +589,18 @@ def send_announcement(current_user):
         contact_info = resident.get('contact', {})
         # WhatsApp
         if contact_info.get('whatsapp'):
-            template_name = os.environ.get("AISENSY_ANNOUNCEMENT_TEMPLATE")
-            if template_name:
+            campaign_name = os.environ.get("AISENSY_ANNOUNCEMENT_TEMPLATE")
+            if campaign_name:
                 resident_name = resident.get("name", "Resident")
+                # Ensure the parameters match your AiSensy announcement template
                 template_params = [subject, resident_name, message_template]
                 whatsapp_status = send_whatsapp_template_message(
                     recipient_number=contact_info['whatsapp'],
-                    template_name=template_name,
+                    user_name=resident_name,
+                    campaign_name=campaign_name,
                     template_params=template_params
                 )
-                details.append({"recipient": resident['name'], "method": "WhatsApp", "status": "Sent" if whatsapp_status else "Failed", "content": f"Template: {template_name}"})
+                details.append({"recipient": resident['name'], "method": "WhatsApp", "status": "Sent" if whatsapp_status else "Failed", "content": f"Campaign: {campaign_name}"})
         
         # SMS
         if contact_info.get('sms'):
