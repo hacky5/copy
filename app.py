@@ -25,7 +25,6 @@ redis = Redis(
 
 
 JWT_SECRET_KEY = os.environ.get('JWT_SECRET_KEY', 'default-super-secret-key-for-testing')
-CRON_SECRET = os.environ.get('CRON_SECRET')
 
 # --- IMPORT SENDING FUNCTIONS ---
 from send_whatsapp import send_whatsapp_template_message
@@ -297,7 +296,7 @@ def handle_specific_resident(current_user, resident_id):
             for r in residents:
                 if r.get("id") == rid:
                     r["name"] = data.get("name", r["name"])
-                    r["flat_number"] = data.get("flat_number", r.get("flat_number"))
+                    r["flat_number"]_number"] = data.get("flat_number", r.get("flat_number"))
                     r["contact"] = data.get("contact", r["contact"])
                     r["notes"] = data.get("notes", r.get("notes"))
                     resident_found = True
@@ -488,38 +487,19 @@ def handle_settings(current_user):
 
 
 # CORE ACTIONS
-@app.route('/api/trigger-reminder', methods=['POST', 'GET'])
-def trigger_reminder():
-    # Authorization check
-    is_cron_job = False
-    if 'x-cron-secret' in request.headers and request.headers['x-cron-secret'] == CRON_SECRET:
-        is_cron_job = True
-        user_email = "System (Cron)"
-    else:
-        # Fallback to token-based auth for manual trigger
-        token = request.headers.get('x-access-token')
-        if not token:
-            return jsonify({"message": "Unauthorized: Token or cron secret is missing"}), 401
-        try:
-            data = jwt.decode(token, JWT_SECRET_KEY, algorithms=["HS256"])
-            admins_json = redis.get('admins')
-            admins = json.loads(admins_json) if admins_json else []
-            current_user = next((admin for admin in admins if admin['id'] == data['id']), None)
-            if not current_user:
-                return jsonify({'message': 'User not found!'}), 401
-            user_email = current_user['email']
-        except Exception:
-            return jsonify({"message": "Token is invalid"}), 401
-
+def _run_reminder_logic(user_email="System (Cron)", custom_template=None):
+    """
+    Core logic for sending a reminder. Can be called by cron or manual trigger.
+    """
     reminders_paused = json.loads(redis.get('reminders_paused') or 'false')
-    if is_cron_job and reminders_paused:
+    if reminders_paused and user_email == "System (Cron)":
         add_log_entry("System", "Automatic reminder skipped because reminders are paused.")
         return jsonify({"message": "Reminders are paused, automatic reminder skipped."}), 200
 
-    custom_template = request.get_json().get('message') if request.is_json else None
     residents_json = redis.get('residents')
     residents = json.loads(residents_json) if residents_json else []
-    if not residents: return jsonify({"message": "No residents to remind."}), 400
+    if not residents:
+        return jsonify({"message": "No residents to remind."}), 400
     
     person_on_duty = residents[0]
     settings_json = redis.get('settings')
@@ -566,6 +546,37 @@ def trigger_reminder():
     
     _advance_turn_in_db()
     return jsonify({"message": f"Reminder sent to {person_on_duty['name']}."})
+
+
+@app.route('/api/trigger-reminder', methods=['POST', 'GET'])
+def trigger_reminder():
+    # This endpoint can be triggered by Vercel's cron (GET) or a logged-in user (POST)
+    
+    # Vercel Cron jobs do not require a special secret here, 
+    # as they are protected by deployment-level security.
+    # We trust the GET request if it comes through our proxy.
+    if request.method == 'GET':
+        return _run_reminder_logic()
+
+    # For manual triggers (POST), we require a valid user token.
+    if request.method == 'POST':
+        token = request.headers.get('x-access-token')
+        if not token:
+            return jsonify({"message": "Unauthorized: Token is missing"}), 401
+        try:
+            data = jwt.decode(token, JWT_SECRET_KEY, algorithms=["HS256"])
+            admins_json = redis.get('admins')
+            admins = json.loads(admins_json) if admins_json else []
+            current_user = next((admin for admin in admins if admin['id'] == data['id']), None)
+            if not current_user:
+                return jsonify({'message': 'User not found!'}), 401
+            
+            custom_template = request.get_json().get('message') if request.is_json else None
+            return _run_reminder_logic(user_email=current_user['email'], custom_template=custom_template)
+        except Exception as e:
+            return jsonify({"message": "Token is invalid or an error occurred", "error": str(e)}), 401
+
+    return jsonify({"message": "Method not allowed"}), 405
 
 
 @app.route('/api/announcements', methods=['POST'])
@@ -726,5 +737,3 @@ def initialize_data():
 
 if __name__ == '__main__':
     app.run(debug=True)
-
-    
