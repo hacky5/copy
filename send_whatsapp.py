@@ -1,55 +1,54 @@
-# send_whatsapp.py
-
 import os
 import requests
-from dotenv import load_dotenv
+import json
 
-# Load environment variables (for local testing)
-load_dotenv()
+AISENSY_API_URL = "https://api.aisensy.com/v1/template/send"
 
-AISENSY_API_KEY = os.getenv("AISENSY_API_KEY")
-AISENSY_API_URL = "https://backend.aisensy.com/campaign/t1/api/v2"
-
-def send_whatsapp_template_message(recipient_number, user_name, campaign_name, template_params):
+def send_whatsapp_template_message(recipient_number, template_name, template_params):
     """
-    Sends a WhatsApp message using AiSensy campaigns.
-    :param recipient_number: The mobile number of the user with country code.
-    :param user_name: The name of the user.
-    :param campaign_name: The name of the AiSensy campaign to trigger.
-    :param template_params: A list of parameter values for the template.
-    :return: True if sent successfully, False otherwise.
+    Sends a WhatsApp template message using the AiSensy API.
+    
+    :param recipient_number: The user's WhatsApp number (e.g., 919876543210).
+    :param template_name: The pre-approved template name from AiSensy dashboard.
+    :param template_params: A list of strings to fill the template variables.
     """
-    if not all([AISENSY_API_KEY, campaign_name]):
-        print("Error: AiSensy API Key or Campaign Name is not configured.")
+    api_key = os.environ.get("AISENSY_API_KEY")
+
+    if not api_key:
+        print("ERROR: AISENSY_API_KEY is not configured in environment variables.")
+        return False
+    
+    if not template_name:
+        print(f"ERROR: No AiSensy template name was provided for the request to {recipient_number}.")
         return False
 
     headers = {
-        'Content-Type': 'application/json'
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}"
     }
 
     payload = {
-        "apiKey": AISENSY_API_KEY,
-        "campaignName": campaign_name,
-        "destination": recipient_number,
-        "userName": user_name,
-        "templateParams": template_params
+        "recipient": recipient_number,
+        "template_name": template_name,
+        "template_params": template_params
     }
 
     try:
-        response = requests.post(AISENSY_API_URL, headers=headers, json=payload)
-        response.raise_for_status()  # Raise an exception for bad status codes
-
-        response_json = response.json()
-        if response_json.get("success"):
-            print(f"WhatsApp message sent successfully to {recipient_number} via campaign '{campaign_name}'.")
+        response = requests.post(AISENSY_API_URL, headers=headers, data=json.dumps(payload))
+        response.raise_for_status()  # Raises an exception for bad responses (4xx or 5xx)
+        
+        response_data = response.json()
+        # AiSensy success response can vary, check for a positive status
+        if response.status_code in [200, 202] and response_data.get('success', True):
+            print(f"WhatsApp template '{template_name}' sent successfully to {recipient_number}")
             return True
         else:
-            print(f"Error sending WhatsApp to {recipient_number}: {response_json.get('message')}")
+            print(f"Failed to send WhatsApp to {recipient_number}. Response: {response_data}")
             return False
 
     except requests.exceptions.RequestException as e:
         print(f"Error sending WhatsApp to {recipient_number}: {e}")
         return False
     except Exception as e:
-        print(f"An unexpected error occurred: {e}")
+        print(f"An unexpected error occurred while sending WhatsApp: {e}")
         return False
