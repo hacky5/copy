@@ -545,7 +545,7 @@ def handle_specific_resident(current_user, resident_id):
         # After deleting a resident, we should reset the turn index to be safe
         redis.set('current_turn_index', 0)
         add_log_entry(current_user['email'], f"Resident Deleted: {resident_name}")
-        return jsonify({"message": "Resident deleted successfully"})
+        return "", 204
 
 # ISSUES
 @app.route('/api/issues', methods=['GET', 'DELETE'])
