@@ -488,22 +488,18 @@ def handle_settings(current_user):
 
 
 # CORE ACTIONS
-@app.route('/api/trigger-reminder', methods=['POST'])
+@app.route('/api/trigger-reminder', methods=['POST', 'GET'])
 def trigger_reminder():
+    # Authorization check
     is_cron_job = False
-    if 'x-cron-secret' in request.headers:
-        if request.headers['x-cron-secret'] == CRON_SECRET:
-            is_cron_job = True
-        else:
-            # Invalid secret, immediate rejection
-            return jsonify({"message": "Invalid cron secret"}), 403
-
-    user_email = "System (Cron)"
-    # If not a cron job, check for user token
-    if not is_cron_job:
+    if 'x-cron-secret' in request.headers and request.headers['x-cron-secret'] == CRON_SECRET:
+        is_cron_job = True
+        user_email = "System (Cron)"
+    else:
+        # Fallback to token-based auth for manual trigger
         token = request.headers.get('x-access-token')
         if not token:
-            return jsonify({"message": "Token is missing"}), 401
+            return jsonify({"message": "Unauthorized: Token or cron secret is missing"}), 401
         try:
             data = jwt.decode(token, JWT_SECRET_KEY, algorithms=["HS256"])
             admins_json = redis.get('admins')
