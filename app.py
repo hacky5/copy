@@ -25,6 +25,7 @@ redis = Redis(
 
 
 JWT_SECRET_KEY = os.environ.get('JWT_SECRET_KEY', 'default-super-secret-key-for-testing')
+CRON_SECRET = os.environ.get('CRON_SECRET')
 
 # --- IMPORT SENDING FUNCTIONS ---
 from send_whatsapp import send_whatsapp_template_message
@@ -489,36 +490,33 @@ def handle_settings(current_user):
 # CORE ACTIONS
 @app.route('/api/trigger-reminder', methods=['POST'])
 def trigger_reminder():
+    is_cron_job = False
+    if 'x-cron-secret' in request.headers:
+        if request.headers['x-cron-secret'] == CRON_SECRET:
+            is_cron_job = True
+        else:
+            # Invalid secret, immediate rejection
+            return jsonify({"message": "Invalid cron secret"}), 403
+
     user_email = "System (Cron)"
-    is_authorized = False
-    
-    # Check for cron secret first
-    cron_secret_from_header = request.headers.get('x-cron-secret')
-    cron_secret_from_env = os.environ.get('CRON_SECRET')
-
-    if cron_secret_from_header and cron_secret_from_env and cron_secret_from_header == cron_secret_from_env:
-        is_authorized = True
-    else:
-        # Fallback to token-based authentication
+    # If not a cron job, check for user token
+    if not is_cron_job:
         token = request.headers.get('x-access-token')
-        if token:
-            try:
-                data = jwt.decode(token, JWT_SECRET_KEY, algorithms=["HS256"])
-                admins_json = redis.get('admins')
-                admins = json.loads(admins_json) if admins_json else []
-                current_user = next((admin for admin in admins if admin['id'] == data['id']), None)
-                if current_user:
-                    user_email = current_user['email']
-                    is_authorized = True
-            except Exception:
-                pass # Token is invalid, authorization fails
+        if not token:
+            return jsonify({"message": "Token is missing"}), 401
+        try:
+            data = jwt.decode(token, JWT_SECRET_KEY, algorithms=["HS256"])
+            admins_json = redis.get('admins')
+            admins = json.loads(admins_json) if admins_json else []
+            current_user = next((admin for admin in admins if admin['id'] == data['id']), None)
+            if not current_user:
+                return jsonify({'message': 'User not found!'}), 401
+            user_email = current_user['email']
+        except Exception:
+            return jsonify({"message": "Token is invalid"}), 401
 
-    if not is_authorized:
-        return jsonify({'message': 'Authentication failed. Provide a valid token or cron secret.'}), 401
-
-    # Main logic starts here
     reminders_paused = json.loads(redis.get('reminders_paused') or 'false')
-    if user_email == "System (Cron)" and reminders_paused:
+    if is_cron_job and reminders_paused:
         add_log_entry("System", "Automatic reminder skipped because reminders are paused.")
         return jsonify({"message": "Reminders are paused, automatic reminder skipped."}), 200
 
@@ -546,7 +544,6 @@ def trigger_reminder():
             owner_name = settings.get('owner_name', 'Admin')
             owner_contact = settings.get('owner_contact_number', '')
             template_params = [resident_name, owner_name, owner_contact]
-
             whatsapp_status = send_whatsapp_template_message(
                 recipient_number=contact_info['whatsapp'],
                 user_name=resident_name,
@@ -733,3 +730,5 @@ def initialize_data():
 
 if __name__ == '__main__':
     app.run(debug=True)
+
+    
