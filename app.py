@@ -17,11 +17,9 @@ app = Flask(__name__)
 CORS(app)
 
 # Initialize Redis Client
-# Use the environment variables provided by Vercel KV
-redis = Redis(
-    url=os.environ.get('KV_URL'),
-    token=os.environ.get('KV_REST_API_TOKEN')
-)
+# The from_env() method automatically uses the Vercel KV environment variables
+# for the REST API (UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN).
+redis = Redis.from_env()
 
 JWT_SECRET_KEY = os.environ.get('JWT_SECRET_KEY', 'default-super-secret-key-for-testing')
 
