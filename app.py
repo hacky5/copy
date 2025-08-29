@@ -10,30 +10,26 @@ from flask_cors import CORS
 from werkzeug.security import generate_password_hash, check_password_hash
 import jwt
 from functools import wraps
+from dotenv import load_dotenv
 
 # --- INITIALIZATION ---
-
+load_dotenv()
 app = Flask(__name__)
 CORS(app)
 
 # Initialize Redis Client
-redis = Redis.from_env()
+redis = Redis(
+    url=os.environ.get("KV_REST_API_URL"),
+    token=os.environ.get("KV_REST_API_TOKEN")
+)
+
 
 JWT_SECRET_KEY = os.environ.get('JWT_SECRET_KEY', 'default-super-secret-key-for-testing')
 
-# --- MOCK SENDING FUNCTIONS ---
-# In a real app, these would integrate with services like Twilio, SendGrid, etc.
-def send_whatsapp_template_message(recipient_number, user_name, campaign_name, template_params):
-    print(f"MOCK WHATSAPP to {recipient_number} with campaign {campaign_name} and params {template_params}")
-    return {"status": "Sent"}
-
-def send_sms_message(recipient_number, message):
-    print(f"MOCK SMS to {recipient_number}: {message}")
-    return {"status": "Sent"}
-
-def send_email_message(recipient_email, subject, html_body):
-    print(f"MOCK EMAIL to {recipient_email} with subject '{subject}'")
-    return {"status": "Sent"}
+# --- IMPORT SENDING FUNCTIONS ---
+from send_whatsapp import send_whatsapp_template_message
+from send_sms import send_sms_message
+from send_email import send_email_message
 
 
 # --- SECURITY & AUTHENTICATION ---
@@ -202,19 +198,20 @@ def report_issue():
     owner_whatsapp = settings.get('owner_contact_whatsapp')
     owner_sms = settings.get('owner_contact_number')
     owner_email = settings.get('owner_contact_email')
+    owner_name = settings.get('owner_name', 'Owner')
     
     if owner_whatsapp or owner_sms or owner_email:
         # Generate messages
         html_notification = generate_owner_issue_email(new_issue, settings)
-        sms_notification = f"New Issue Reported by {new_issue['reported_by']}, Flat {new_issue['flat_number']}. Description: {new_issue['description']}"
+        text_notification = f"New Issue Reported by {new_issue['reported_by']}, Flat {new_issue['flat_number']}. Description: {new_issue['description']}"
         
         details = []
         if owner_email:
-            send_email_message(owner_email, "New Maintenance Issue Reported", html_notification)
-            details.append({"recipient": owner_email, "method": "Email", "status": "Sent", "content": f"Subject: New Maintenance Issue Reported"})
+            email_status = send_email_message(owner_email, "New Maintenance Issue Reported", html_notification)
+            details.append({"recipient": owner_email, "method": "Email", "status": "Sent" if email_status else "Failed", "content": f"Subject: New Maintenance Issue Reported"})
         if owner_sms:
-            send_sms_message(owner_sms, sms_notification)
-            details.append({"recipient": owner_sms, "method": "SMS", "status": "Sent", "content": sms_notification})
+            sms_status = send_sms_message(owner_sms, text_notification)
+            details.append({"recipient": owner_sms, "method": "SMS", "status": "Sent" if sms_status else "Failed", "content": text_notification})
         
         if details:
             add_communication_history("Issue Notification", "System Owner", details)
@@ -348,7 +345,7 @@ def handle_issues(current_user):
             if len(issues) == original_len: return jsonify({'message': 'No matching issues found to delete'}), 404
             
             redis.set('issues', json.dumps(issues))
-            add_log_entry(current_user['email'], f"Deleted {len(issues) - len(issues)} issue(s)")
+            add_log_entry(current_user['email'], f"Deleted {original_len - len(issues)} issue(s)")
             return jsonify({'message': 'Issues deleted successfully'})
         return delete(current_user)
 
@@ -493,11 +490,15 @@ def handle_settings(current_user):
 @app.route('/api/trigger-reminder', methods=['POST'])
 def trigger_reminder():
     user_email = "System (Cron)"
+    # This allows a logged-in user to trigger it manually
     if 'x-access-token' in request.headers:
         try:
             token = request.headers['x-access-token']
             data = jwt.decode(token, JWT_SECRET_KEY, algorithms=["HS256"])
-            # ... (code to get user email from token)
+            admins_json = redis.get('admins')
+            admins = json.loads(admins_json) if admins_json else []
+            current_user = next((admin for admin in admins if admin['id'] == data['id']), None)
+            if current_user: user_email = current_user['email']
         except Exception: pass
 
     reminders_paused = json.loads(redis.get('reminders_paused') or 'false')
@@ -520,12 +521,32 @@ def trigger_reminder():
 
     contact_info = person_on_duty.get('contact', {})
     details = []
-    if contact_info.get('email'):
-        send_email_message(contact_info['email'], "Bin Duty Reminder", html_message)
-        details.append({"recipient": person_on_duty['name'], "method": "Email", "status": "Sent", "content": f"Subject: Bin Duty Reminder"})
+    
+    # WhatsApp
+    if contact_info.get('whatsapp'):
+        template_name = os.environ.get("AISENSY_REMINDER_TEMPLATE")
+        if template_name:
+            resident_name = person_on_duty.get("name", "Resident")
+            owner_name = settings.get('owner_name', 'Admin')
+            owner_contact = settings.get('owner_contact_number', '')
+            template_params = [resident_name, owner_name, owner_contact]
+
+            whatsapp_status = send_whatsapp_template_message(
+                recipient_number=contact_info['whatsapp'],
+                template_name=template_name,
+                template_params=template_params
+            )
+            details.append({"recipient": person_on_duty['name'], "method": "WhatsApp", "status": "Sent" if whatsapp_status else "Failed", "content": f"Template: {template_name}"})
+
+    # SMS
     if contact_info.get('sms'):
-        send_sms_message(contact_info['sms'], text_message)
-        details.append({"recipient": person_on_duty['name'], "method": "SMS", "status": "Sent", "content": text_message})
+        sms_status = send_sms_message(contact_info['sms'], text_message)
+        details.append({"recipient": person_on_duty['name'], "method": "SMS", "status": "Sent" if sms_status else "Failed", "content": text_message})
+
+    # Email
+    if contact_info.get('email'):
+        email_status = send_email_message(contact_info['email'], "Bin Duty Reminder", html_message)
+        details.append({"recipient": person_on_duty['name'], "method": "Email", "status": "Sent" if email_status else "Failed", "content": f"Subject: Bin Duty Reminder"})
     
     if details:
         add_communication_history("Reminder", "Bin Duty Reminder", details)
@@ -563,12 +584,28 @@ def send_announcement(current_user):
         html_message = generate_html_message(message_template, resident, settings, subject)
         
         contact_info = resident.get('contact', {})
-        if contact_info.get('email'):
-            send_email_message(contact_info['email'], subject, html_message)
-            details.append({"recipient": resident['name'], "method": "Email", "status": "Sent", "content": f"Subject: {subject}"})
+        # WhatsApp
+        if contact_info.get('whatsapp'):
+            template_name = os.environ.get("AISENSY_ANNOUNCEMENT_TEMPLATE")
+            if template_name:
+                resident_name = resident.get("name", "Resident")
+                template_params = [subject, resident_name, message_template]
+                whatsapp_status = send_whatsapp_template_message(
+                    recipient_number=contact_info['whatsapp'],
+                    template_name=template_name,
+                    template_params=template_params
+                )
+                details.append({"recipient": resident['name'], "method": "WhatsApp", "status": "Sent" if whatsapp_status else "Failed", "content": f"Template: {template_name}"})
+        
+        # SMS
         if contact_info.get('sms'):
-            send_sms_message(contact_info['sms'], text_message)
-            details.append({"recipient": resident['name'], "method": "SMS", "status": "Sent", "content": text_message})
+            sms_status = send_sms_message(contact_info['sms'], text_message)
+            details.append({"recipient": resident['name'], "method": "SMS", "status": "Sent" if sms_status else "Failed", "content": text_message})
+
+        # Email
+        if contact_info.get('email'):
+            email_status = send_email_message(contact_info['email'], subject, html_message)
+            details.append({"recipient": resident['name'], "method": "Email", "status": "Sent" if email_status else "Failed", "content": f"Subject: {subject}"})
 
     if details:
         add_communication_history("Announcement", subject, details)
