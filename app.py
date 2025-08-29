@@ -348,7 +348,7 @@ def handle_issues(current_user):
             if len(issues) == original_len: return jsonify({'message': 'No matching issues found to delete'}), 404
             
             redis.set('issues', json.dumps(issues))
-            add_log_entry(current_user['email'], f"Deleted {original_len - len(issues)} issue(s)")
+            add_log_entry(current_user['email'], f"Deleted {len(issues) - len(issues)} issue(s)")
             return jsonify({'message': 'Issues deleted successfully'})
         return delete(current_user)
 
@@ -620,6 +620,32 @@ def advance_turn(current_user):
     else:
         return jsonify({"message": message}), 400
 
+# HISTORY
+@app.route('/api/history', methods=['GET', 'DELETE'])
+@token_required
+@role_required(['superuser', 'editor'])
+def handle_history(current_user):
+    if request.method == 'GET':
+        history_json = redis.get('communication_history')
+        history = json.loads(history_json) if history_json else []
+        return jsonify(history)
+
+    if request.method == 'DELETE':
+        data = request.get_json()
+        ids_to_delete = set(data.get('ids', []))
+        if not ids_to_delete:
+            return jsonify({'message': 'No IDs provided'}), 400
+
+        history_json = redis.get('communication_history')
+        history = json.loads(history_json) if history_json else []
+        
+        original_len = len(history)
+        history = [item for item in history if item.get('id') not in ids_to_delete]
+        
+        redis.set('communication_history', json.dumps(history))
+        add_log_entry(current_user['email'], f"Deleted {original_len - len(history)} history item(s)")
+        return jsonify({'message': 'History items deleted successfully'})
+
 
 # This is a one-time setup route.
 @app.route('/api/initialize-data')
@@ -652,5 +678,3 @@ def initialize_data():
 
 if __name__ == '__main__':
     app.run(debug=True)
-
-    
