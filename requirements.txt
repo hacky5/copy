@@ -6,8 +6,7 @@ gunicorn
 python-dotenv
 upstash-redis
 requests
-twilio
-sendgrid
+resend
 vercel-blob
 
     
