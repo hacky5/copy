@@ -490,17 +490,33 @@ def handle_settings(current_user):
 @app.route('/api/trigger-reminder', methods=['POST'])
 def trigger_reminder():
     user_email = "System (Cron)"
-    # This allows a logged-in user to trigger it manually
-    if 'x-access-token' in request.headers:
-        try:
-            token = request.headers['x-access-token']
-            data = jwt.decode(token, JWT_SECRET_KEY, algorithms=["HS256"])
-            admins_json = redis.get('admins')
-            admins = json.loads(admins_json) if admins_json else []
-            current_user = next((admin for admin in admins if admin['id'] == data['id']), None)
-            if current_user: user_email = current_user['email']
-        except Exception: pass
+    is_authorized = False
+    
+    # Check for cron secret first
+    cron_secret_from_header = request.headers.get('x-cron-secret')
+    cron_secret_from_env = os.environ.get('CRON_SECRET')
 
+    if cron_secret_from_header and cron_secret_from_env and cron_secret_from_header == cron_secret_from_env:
+        is_authorized = True
+    else:
+        # Fallback to token-based authentication
+        token = request.headers.get('x-access-token')
+        if token:
+            try:
+                data = jwt.decode(token, JWT_SECRET_KEY, algorithms=["HS256"])
+                admins_json = redis.get('admins')
+                admins = json.loads(admins_json) if admins_json else []
+                current_user = next((admin for admin in admins if admin['id'] == data['id']), None)
+                if current_user:
+                    user_email = current_user['email']
+                    is_authorized = True
+            except Exception:
+                pass # Token is invalid, authorization fails
+
+    if not is_authorized:
+        return jsonify({'message': 'Authentication failed. Provide a valid token or cron secret.'}), 401
+
+    # Main logic starts here
     reminders_paused = json.loads(redis.get('reminders_paused') or 'false')
     if user_email == "System (Cron)" and reminders_paused:
         add_log_entry("System", "Automatic reminder skipped because reminders are paused.")
@@ -529,8 +545,6 @@ def trigger_reminder():
             resident_name = person_on_duty.get("name", "Resident")
             owner_name = settings.get('owner_name', 'Admin')
             owner_contact = settings.get('owner_contact_number', '')
-            # According to the campaign API, the template params might be dynamic.
-            # You need to ensure the order matches the template on AiSensy.
             template_params = [resident_name, owner_name, owner_contact]
 
             whatsapp_status = send_whatsapp_template_message(
@@ -592,7 +606,6 @@ def send_announcement(current_user):
             campaign_name = os.environ.get("AISENSY_ANNOUNCEMENT_TEMPLATE")
             if campaign_name:
                 resident_name = resident.get("name", "Resident")
-                # Ensure the parameters match your AiSensy announcement template
                 template_params = [subject, resident_name, message_template]
                 whatsapp_status = send_whatsapp_template_message(
                     recipient_number=contact_info['whatsapp'],
