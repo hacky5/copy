@@ -422,7 +422,7 @@ def handle_admins(current_user):
 
         new_admin = {
             "id": str(uuid.uuid4()), "email": data['email'],
-            "password_hash": generate_password_hash(data['password'], method='pbkdf2:sha256'),
+            "password_hash": generate_password_hash(data['password']),
             "role": data['role']
         }
         admins.append(new_admin)
@@ -446,7 +446,7 @@ def handle_specific_admin(current_user, admin_id):
                 if 'email' in data and data['email']: admin['email'] = data['email']
                 if 'role' in data: admin['role'] = data['role']
                 if 'password' in data and data['password']:
-                    admin['password_hash'] = generate_password_hash(data['password'], method='pbkdf2:sha256')
+                    admin['password_hash'] = generate_password_hash(data['password'])
                 admin_found = True
                 break
         if not admin_found: return jsonify({"error": "Admin not found"}), 404
@@ -635,7 +635,7 @@ def initialize_data():
         redis.set('settings', json.dumps(default_settings))
 
         if not redis.exists('admins'):
-            pw_hash = generate_password_hash("your-secure-password", method='pbkdf2:sha256')
+            pw_hash = generate_password_hash("your-secure-password")
             admins = [{"id": str(uuid.uuid4()), "email": "admin@example.com", "password_hash": pw_hash, "role": "superuser"}]
             redis.set('admins', json.dumps(admins))
 
