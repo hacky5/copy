@@ -27,7 +27,7 @@ JWT_SECRET_KEY = os.environ.get('JWT_SECRET_KEY', 'default-super-secret-key-for-
 
 # --- IMPORT SENDING FUNCTIONS ---
 # These should be your actual implementations that use services like Twilio/SendGrid
-from send_whatsapp import send_whatsapp_message
+from send_whatsapp import send_whatsapp_template_message
 from send_sms import send_sms_message
 from send_email import send_email_message
 
@@ -403,9 +403,24 @@ def report_issue():
     sms_notification = f"New Issue Reported by {new_issue['reported_by']}, Flat {new_issue['flat_number']}. Description: {new_issue['description']}"
     html_notification = generate_owner_issue_email(new_issue, settings)
 
-    if owner_whatsapp: 
-        send_whatsapp_message(owner_whatsapp, whatsapp_notification)
-        add_communication_history("New Issue (WhatsApp)", owner_name, whatsapp_notification)
+    if owner_whatsapp:
+        campaign_name = os.getenv("AISENSY_ANNOUNCEMENT_CAMPAIGN_NAME")
+
+        # Using the announcement template for issue notifications
+        # The parameters are announcement name, resident name, and announcement body.
+        template_params = [
+            "New Issue Reported", # announcement name
+            owner_name,           # resident name (sending to owner)
+            whatsapp_notification # announcement body
+        ]
+
+        send_whatsapp_template_message(
+            recipient_number=owner_whatsapp,
+            user_name=owner_name,
+            campaign_name=campaign_name,
+            template_params=template_params
+        )
+        add_communication_history("New Issue (WhatsApp)", owner_name, f"Sent template '{campaign_name}' for new issue")
     if owner_sms:
         send_sms_message(owner_sms, sms_notification)
         add_communication_history("New Issue (SMS)", owner_name, sms_notification)
@@ -765,9 +780,23 @@ def trigger_reminder():
     html_message = generate_html_message(template_to_use, person_on_duty, settings, "Bin Duty Reminder")
 
     contact_info = person_on_duty.get('contact', {})
-    if contact_info.get('whatsapp'): 
-        send_whatsapp_message(contact_info['whatsapp'], text_message)
-        add_communication_history("Reminder (WhatsApp)", person_on_duty['name'], text_message)
+    if contact_info.get('whatsapp'):
+        campaign_name = os.getenv("AISENSY_REMINDER_CAMPAIGN_NAME")
+        resident_name = person_on_duty.get("name", "Resident")
+        owner_name = settings.get('owner_name', 'Admin')
+        owner_contact = settings.get('owner_contact_number', '')
+
+        # The user's template was: "Hi [Resident], ... Contact [Owner] at [+27745785861]..."
+        # Based on this, the parameters are the resident's name, the owner's name, and the owner's contact.
+        template_params = [resident_name, owner_name, owner_contact]
+
+        send_whatsapp_template_message(
+            recipient_number=contact_info['whatsapp'],
+            user_name=resident_name,
+            campaign_name=campaign_name,
+            template_params=template_params
+        )
+        add_communication_history("Reminder (WhatsApp)", person_on_duty['name'], f"Sent template '{campaign_name}'")
     if contact_info.get('sms'): 
         send_sms_message(contact_info['sms'], text_message)
         add_communication_history("Reminder (SMS)", person_on_duty['name'], text_message)
@@ -812,9 +841,21 @@ def send_announcement(current_user):
         html_message = generate_html_message(message_template, resident, settings, subject)
         
         contact_info = resident.get('contact', {})
-        if contact_info.get('whatsapp'): 
-            send_whatsapp_message(contact_info['whatsapp'], text_message)
-            add_communication_history(f"Announcement (WhatsApp) - {subject}", resident['name'], text_message)
+        if contact_info.get('whatsapp'):
+            campaign_name = os.getenv("AISENSY_ANNOUNCEMENT_CAMPAIGN_NAME")
+            resident_name = resident.get("name", "Resident")
+
+            # The user's template was: "Announcement: [announcement name] Hello [Resident] [announcement body]..."
+            # The parameters are the announcement name, resident name, and announcement body.
+            template_params = [subject, resident_name, message_template]
+
+            send_whatsapp_template_message(
+                recipient_number=contact_info['whatsapp'],
+                user_name=resident_name,
+                campaign_name=campaign_name,
+                template_params=template_params
+            )
+            add_communication_history(f"Announcement (WhatsApp) - {subject}", resident['name'], f"Sent template '{campaign_name}'")
         if contact_info.get('sms'): 
             send_sms_message(contact_info['sms'], text_message)
             add_communication_history(f"Announcement (SMS) - {subject}", resident['name'], text_message)
