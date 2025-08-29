@@ -1,0 +1,13 @@
+Flask
+Flask-Cors
+PyJWT
+Werkzeug
+gunicorn
+python-dotenv
+upstash-redis
+requests
+twilio
+sendgrid
+vercel-blob
+
+    
