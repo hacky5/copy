@@ -19,7 +19,7 @@ CORS(app)
 # Initialize Redis Client
 # Use the environment variables provided by Vercel KV
 redis = Redis(
-    url=os.environ.get('KV_URL'),
+    url=os.environ.get('KV_REST_API_URL'),
     token=os.environ.get('KV_REST_API_TOKEN')
 )
 
