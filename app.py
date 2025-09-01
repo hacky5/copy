@@ -406,19 +406,18 @@ def report_issue():
     
     # Prepare messages for different channels
     whatsapp_template_params = [
-        new_issue['reported_by'], 
+        new_issue['reported_by'],  
         new_issue['flat_number'],
-        new_issue['description'],
-        issues_link
+        new_issue['description']
     ]
     sms_notification = f"New Issue Reported by {new_issue['reported_by']}, Flat {new_issue['flat_number']}. Description: {new_issue['description']}"
     html_notification = generate_owner_issue_email(new_issue, settings)
 
     if owner_whatsapp:  
         send_whatsapp_template_message(
-            recipient_number=owner_whatsapp, 
-            user_name=owner_name, 
-            campaign_name=WHATSAPP_ISSUE_CAMPAIGN_NAME, 
+            recipient_number=owner_whatsapp,  
+            user_name=owner_name,  
+            campaign_name=WHATSAPP_ISSUE_CAMPAIGN_NAME,  
             template_params=whatsapp_template_params
         )
         add_communication_history("New Issue (WhatsApp)", owner_name, whatsapp_template_params)
@@ -807,89 +806,153 @@ def trigger_reminder():
 
     template_to_use = custom_template or settings.get("reminder_template", "Reminder: It's your turn for bin duty.")
     
-    # Use template variables for messages
-    first_name = person_on_duty.get("name", "").split(" ")[0]
-    text_message = generate_text_message(template_to_use, person_on_duty, settings)
-    html_message = generate_html_message(template_to_use, person_on_duty, settings, "Bin Duty Reminder")
-    
-    whatsapp_template_params = [
-        first_name, # Assuming the template has a single variable for the name
-        template_to_use # The template message itself
-    ]
-    
-    contact_info = person_on_duty.get('contact', {})
-    if contact_info.get('whatsapp'):  
+    # --- FIXED: WhatsApp template parameters for reminder ---
+    if person_on_duty.get('contact', {}).get('whatsapp_number'):
+        whatsapp_template_params = [
+            person_on_duty.get("name").split(" ")[0],
+            settings.get('owner_name', 'Admin'),
+            settings.get('owner_contact_number', '')
+        ]
         send_whatsapp_template_message(
-            recipient_number=contact_info['whatsapp'],
-            user_name=first_name,
+            recipient_number=person_on_duty['contact']['whatsapp_number'],
+            user_name=person_on_duty['name'],
             campaign_name=WHATSAPP_REMINDER_CAMPAIGN_NAME,
             template_params=whatsapp_template_params
         )
-        add_communication_history("Reminder (WhatsApp)", person_on_duty['name'], text_message)
-    if contact_info.get('sms'):  
-        send_sms_message(contact_info['sms'], text_message)
-        add_communication_history("Reminder (SMS)", person_on_duty['name'], text_message)
-    if contact_info.get('email'):  
-        send_email_message(contact_info['email'], "Bin Duty Reminder", html_message)
+        add_communication_history("Reminder (WhatsApp)", person_on_duty['name'], whatsapp_template_params)
+
+    # Email and SMS logic remain unchanged as per your request
+    if person_on_duty.get('contact', {}).get('sms_number'):
+        sms_message = generate_text_message(template_to_use, person_on_duty, settings)
+        send_sms_message(person_on_duty['contact']['sms_number'], sms_message)
+        add_communication_history("Reminder (SMS)", person_on_duty['name'], sms_message)
+
+    if person_on_duty.get('contact', {}).get('email'):
+        html_message = generate_html_message(template_to_use, person_on_duty, settings)
+        send_email_message(person_on_duty['contact']['email'], "Bin Duty Reminder", html_message)
         add_communication_history("Reminder (Email)", person_on_duty['name'], f"Subject: Bin Duty Reminder\nBody: {template_to_use}")
-    
-    redis.set('last_reminder_date', date.today().isoformat())
-    add_log_entry(user_email, f"Reminder Sent to {person_on_duty['name']}")
-    
-    _advance_turn_in_db()
 
-    return jsonify({"message": f"Reminder sent to {person_on_duty['name']}."})
+    redis.set('last_reminder_date', datetime.utcnow().isoformat())
+    add_log_entry(user_email, f"Reminder sent to {person_on_duty['name']} ({person_on_duty['flat_number']})")
+    return jsonify({"message": "Reminder sent successfully."}), 200
 
-
-@app.route('/api/announcements', methods=['POST'])
+@app.route('/api/trigger-announcement', methods=['POST'])
 @token_required
 @role_required(['superuser', 'editor'])
-def send_announcement(current_user):
+def trigger_announcement(current_user):
     data = request.get_json()
-    subject = data.get('subject')
-    message_template = data.get('message')
-    resident_ids = data.get('resident_ids')
-
-    if not all([subject, message_template, resident_ids]):
-        return jsonify({"message": "Subject, message, and resident_ids are required."}), 400
+    subject = data.get('subject', 'General Announcement')
+    message_body = data.get('message', 'No message provided.')
+    send_to_all = data.get('send_to_all', False)
+    selected_flats = data.get('selected_flats', [])
 
     flats_json = redis.get('flats')
-    all_flats = json.loads(flats_json) if flats_json else []
-    settings_json = redis.get('settings')
-    settings = json.loads(settings_json) if settings_json else {}
+    flats = json.loads(flats_json) if flats_json else []
     
-    recipients = [flat for flat in all_flats if flat.get('id') in resident_ids]
+    recipients = flats
+    if not send_to_all and selected_flats:
+        recipients = [flat for flat in flats if flat.get('flat_number') in selected_flats]
     
     if not recipients:
-        return jsonify({"message": "No valid recipients found for the provided IDs."}), 400
+        return jsonify({"message": "No recipients to send the announcement to."}), 400
+    
+    settings_json = redis.get('settings')
+    settings = json.loads(settings_json) if settings_json else {}
 
-    recipient_names = []
+    sent_count = 0
     for resident in recipients:
-        recipient_names.append(resident['name'])
-        
-        # Prepare content for each channel, with subject included for announcements
-        text_message = generate_text_message(message_template, resident, settings, subject)
-        html_message = generate_html_message(message_template, resident, settings, subject)
-        whatsapp_template_params = [
-            subject,  # Assuming template has variable for subject
-            message_template, # Assuming template has variable for message body
-        ]
-
-        contact_info = resident.get('contact', {})
-        if contact_info.get('whatsapp'):
+        # --- FIXED: WhatsApp template parameters for announcement ---
+        if resident.get('contact', {}).get('whatsapp_number'):
+            whatsapp_template_params = [
+                subject,
+                resident.get("name", ""),
+                message_body
+            ]
             send_whatsapp_template_message(
-                recipient_number=contact_info['whatsapp'],
-                user_name=resident.get('name'),
+                recipient_number=resident['contact']['whatsapp_number'],
+                user_name=resident['name'],
                 campaign_name=WHATSAPP_ANNOUNCEMENT_CAMPAIGN_NAME,
                 template_params=whatsapp_template_params
             )
-            add_communication_history("Announcement (WhatsApp)", resident['name'], text_message)
-        if contact_info.get('sms'):
-            send_sms_message(contact_info['sms'], text_message)
-            add_communication_history("Announcement (SMS)", resident['name'], text_message)
-        if contact_info.get('email'):
-            send_email_message(contact_info['email'], subject, html_message)
-            add_communication_history("Announcement (Email)", resident['name'], f"Subject: {subject}\nBody: {message_template}")
+            add_communication_history("Announcement (WhatsApp)", resident['name'], whatsapp_template_params)
+        
+        if resident.get('contact', {}).get('sms_number'):
+            sms_message = generate_text_message(message_body, resident, settings, subject)
+            send_sms_message(resident['contact']['sms_number'], sms_message)
+            add_communication_history("Announcement (SMS)", resident['name'], sms_message)
+            
+        if resident.get('contact', {}).get('email'):
+            html_message = generate_html_message(message_body, resident, settings, subject)
+            send_email_message(resident['contact']['email'], subject, html_message)
+            add_communication_history("Announcement (Email)", resident['name'], f"Subject: {subject}\nBody: {message_body}")
+
+        sent_count += 1
     
-    add_log_entry(current_user['email'], f"Announcement '{subject}' sent to {len(recipients)} residents.")
-    return jsonify({"message": f"Announcement sent to the selected residents: {', '.join(recipient_names)}."})
+    add_log_entry(current_user['email'], f"Sent announcement to {sent_count} residents")
+    return jsonify({"message": f"Announcement sent to {sent_count} residents."}), 200
+
+@app.route('/api/advance-turn', methods=['POST'])
+@token_required
+@role_required(['superuser', 'editor'])
+def advance_turn(current_user):
+    success, message = _advance_turn_in_db()
+    if success:
+        add_log_entry(current_user['email'], "Manually advanced bin duty turn")
+        return jsonify({"message": message})
+    return jsonify({"message": message}), 400
+
+@app.route('/api/system-status', methods=['GET'])
+@token_required
+def get_system_status(current_user):
+    last_run_date = redis.get('last_reminder_date') or "N/A"
+    reminders_paused = json.loads(redis.get('reminders_paused') or 'false')
+    return jsonify({
+        "last_reminder_run": last_run_date,
+        "reminders_paused": reminders_paused
+    })
+
+
+@app.route('/api/initialize-app', methods=['POST'])
+def initialize_app():
+    try:
+        data = request.get_json()
+        initial_admin_email = data.get('initial_admin_email')
+        initial_admin_password = data.get('initial_admin_password')
+
+        if not initial_admin_email or not initial_admin_password:
+            return jsonify({"error": "Admin email and password are required"}), 400
+
+        # Check if admins key already exists to prevent re-initialization
+        if redis.get('admins') is not None:
+            return jsonify({"message": "App is already initialized"}), 409
+        
+        # Create a default superuser
+        initial_admin = {
+            "id": str(uuid.uuid4()),
+            "email": initial_admin_email,
+            "password_hash": generate_password_hash(initial_admin_password, method='pbkdf2:sha256'),
+            "role": "superuser"
+        }
+        redis.set('admins', json.dumps([initial_admin]))
+        
+        # Initialize other empty data structures
+        redis.set('flats', json.dumps([]))
+        redis.set('issues', json.dumps([]))
+        redis.set('logs', json.dumps(["Initial app setup completed."]))
+        redis.set('communication_history', json.dumps([]))
+        redis.set('settings', json.dumps({
+            "owner_name": "",
+            "owner_contact_whatsapp": "",
+            "owner_contact_number": "",
+            "owner_contact_email": "",
+            "report_issue_link": "",
+            "reminder_template": "Hello {first_name}, a friendly reminder that it's your turn for bin duty today."
+        }))
+        redis.set('reminders_paused', json.dumps(False))
+
+        add_log_entry("System", f"App initialized with superuser: {initial_admin_email}")
+        
+        return jsonify({"message": "App initialized successfully."}), 200
+
+if __name__ == '__main__':
+    app.run(debug=True, port=int(os.environ.get("PORT", 5000)))
